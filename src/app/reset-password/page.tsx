@@ -9,15 +9,16 @@ import { Button, Field, inputClass } from "@/components/ui";
 function ResetForm() {
   const params = useSearchParams();
   const router = useRouter();
-  const token = params.get("token") ?? "";
-  const email = params.get("email") ?? "";
+  // Appwrite appends userId + secret to the recovery link.
+  const userId = params.get("userId") ?? "";
+  const secret = params.get("secret") ?? "";
 
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const invalid = !token || !email;
+  const invalid = !userId || !secret;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -30,7 +31,7 @@ function ResetForm() {
     const res = await fetch("/api/reset-password", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, email, password }),
+      body: JSON.stringify({ userId, secret, password }),
     });
     setLoading(false);
     if (!res.ok) {

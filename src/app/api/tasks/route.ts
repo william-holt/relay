@@ -1,4 +1,11 @@
-import { supabaseAdmin } from "@/lib/supabase";
+import { ID, Permission, Query, Role } from "node-appwrite";
+import {
+  createAdminClient,
+  mapTask,
+  DATABASE_ID,
+  CUSTOMERS,
+  TASKS,
+} from "@/lib/appwrite";
 import { currentUserId, membershipRole, jsonError } from "@/lib/authz";
 import { cleanText, MAX_SHORT } from "@/lib/validation";
 
@@ -13,17 +20,20 @@ export async function GET(req: Request) {
   if (!(await membershipRole(userId, businessId)))
     return jsonError("No access to this business.", 403);
 
-  let query = supabaseAdmin
-    .from("tasks")
-    .select("*, customers(name)")
-    .eq("business_id", businessId)
-    .order("due_at", { ascending: true, nullsFirst: false });
+  const queries = [
+    Query.equal("businessId", businessId),
+    Query.orderAsc("due_at"),
+    Query.limit(200),
+  ];
+  if (searchParams.get("open") === "true") queries.push(Query.equal("done", false));
 
-  if (searchParams.get("open") === "true") query = query.eq("done", false);
-
-  const { data, error } = await query;
-  if (error) return jsonError("Could not load tasks.", 500);
-  return Response.json({ tasks: data ?? [] });
+  try {
+    const { databases } = createAdminClient();
+    const res = await databases.listDocuments(DATABASE_ID, TASKS, queries);
+    return Response.json({ tasks: res.documents.map(mapTask) });
+  } catch {
+    return jsonError("Could not load tasks.", 500);
+  }
 }
 
 // Create a follow-up task.
@@ -41,32 +51,47 @@ export async function POST(req: Request) {
   if (!(await membershipRole(userId, businessId)))
     return jsonError("No access to this business.", 403);
 
-  // If linking to a customer, make sure it belongs to this business so a task
-  // can't reference a customer in another tenant.
+  const { databases } = createAdminClient();
+
+  // If linking to a customer, make sure it belongs to this business.
   let customerId: string | null = null;
   if (body.customerId) {
-    const { data: cust } = await supabaseAdmin
-      .from("customers")
-      .select("id")
-      .eq("id", body.customerId)
-      .eq("business_id", businessId)
-      .maybeSingle();
-    if (!cust) return jsonError("That customer isn't in this business.");
-    customerId = cust.id;
+    try {
+      const cust = await databases.getDocument(
+        DATABASE_ID,
+        CUSTOMERS,
+        body.customerId
+      );
+      if (cust.businessId !== businessId)
+        return jsonError("That customer isn't in this business.");
+      customerId = cust.$id;
+    } catch {
+      return jsonError("That customer isn't in this business.");
+    }
   }
 
-  const { data, error } = await supabaseAdmin
-    .from("tasks")
-    .insert({
-      business_id: businessId,
-      customer_id: customerId,
-      user_id: userId,
-      title,
-      due_at: body.dueAt ?? null,
-    })
-    .select("*")
-    .single();
-
-  if (error) return jsonError("Could not create task.", 500);
-  return Response.json({ task: data });
+  try {
+    const doc = await databases.createDocument(
+      DATABASE_ID,
+      TASKS,
+      ID.unique(),
+      {
+        businessId,
+        customerId,
+        userId,
+        title,
+        due_at: body.dueAt ?? null,
+        done: false,
+        created_at: new Date().toISOString(),
+      },
+      [
+        Permission.read(Role.team(businessId)),
+        Permission.update(Role.team(businessId)),
+        Permission.delete(Role.team(businessId)),
+      ]
+    );
+    return Response.json({ task: mapTask(doc) });
+  } catch {
+    return jsonError("Could not create task.", 500);
+  }
 }

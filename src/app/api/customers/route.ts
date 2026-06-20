@@ -1,4 +1,10 @@
-import { supabaseAdmin } from "@/lib/supabase";
+import { ID, Permission, Query, Role } from "node-appwrite";
+import {
+  createAdminClient,
+  mapCustomer,
+  DATABASE_ID,
+  CUSTOMERS,
+} from "@/lib/appwrite";
 import { currentUserId, membershipRole, jsonError } from "@/lib/authz";
 import { buildCustomerFields, isValidStatus, sanitizeSearch } from "@/lib/validation";
 
@@ -14,27 +20,34 @@ export async function GET(req: Request) {
   if (!(await membershipRole(userId, businessId)))
     return jsonError("You don't have access to this business.", 403);
 
-  let query = supabaseAdmin
-    .from("customers")
-    .select("*")
-    .eq("business_id", businessId)
-    .order("updated_at", { ascending: false });
+  const queries = [
+    Query.equal("businessId", businessId),
+    Query.orderDesc("updated_at"),
+    Query.limit(200),
+  ];
 
   const status = searchParams.get("status");
-  if (status && isValidStatus(status)) query = query.eq("status", status);
+  if (status && isValidStatus(status)) queries.push(Query.equal("status", status));
 
   const rawQ = searchParams.get("q");
   const q = rawQ ? sanitizeSearch(rawQ) : "";
   if (q) {
-    const term = `%${q}%`;
-    query = query.or(
-      `name.ilike.${term},email.ilike.${term},company.ilike.${term}`
+    queries.push(
+      Query.or([
+        Query.search("name", q),
+        Query.search("email", q),
+        Query.search("company", q),
+      ])
     );
   }
 
-  const { data, error } = await query;
-  if (error) return jsonError("Could not load customers.", 500);
-  return Response.json({ customers: data ?? [] });
+  try {
+    const { databases } = createAdminClient();
+    const res = await databases.listDocuments(DATABASE_ID, CUSTOMERS, queries);
+    return Response.json({ customers: res.documents.map(mapCustomer) });
+  } catch {
+    return jsonError("Could not load customers.", 500);
+  }
 }
 
 // Create a customer.
@@ -44,7 +57,6 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => ({}));
   const { businessId } = body;
-
   if (!businessId) return jsonError("businessId is required.");
 
   const result = buildCustomerFields(body, false);
@@ -54,24 +66,36 @@ export async function POST(req: Request) {
   if (!(await membershipRole(userId, businessId)))
     return jsonError("You don't have access to this business.", 403);
 
-  const { data, error } = await supabaseAdmin
-    .from("customers")
-    .insert({
-      business_id: businessId,
-      name: f.name!,
-      email: f.email ?? null,
-      phone: f.phone ?? null,
-      company: f.company ?? null,
-      title: f.title ?? null,
-      status: f.status ?? "cold_lead",
-      source: f.source ?? null,
-      value: f.value ?? 0,
-      notes: f.notes ?? null,
-      created_by: userId,
-    })
-    .select("*")
-    .single();
-
-  if (error) return jsonError("Could not create customer.", 500);
-  return Response.json({ customer: data });
+  const now = new Date().toISOString();
+  try {
+    const { databases } = createAdminClient();
+    const doc = await databases.createDocument(
+      DATABASE_ID,
+      CUSTOMERS,
+      ID.unique(),
+      {
+        businessId,
+        name: f.name,
+        email: f.email ?? null,
+        phone: f.phone ?? null,
+        company: f.company ?? null,
+        title: f.title ?? null,
+        status: f.status ?? "cold_lead",
+        source: f.source ?? null,
+        value: f.value ?? 0,
+        notes: f.notes ?? null,
+        created_by: userId,
+        created_at: now,
+        updated_at: now,
+      },
+      [
+        Permission.read(Role.team(businessId)),
+        Permission.update(Role.team(businessId)),
+        Permission.delete(Role.team(businessId)),
+      ]
+    );
+    return Response.json({ customer: mapCustomer(doc) });
+  } catch {
+    return jsonError("Could not create customer.", 500);
+  }
 }

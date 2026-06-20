@@ -3,7 +3,6 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { signOut, useSession } from "next-auth/react";
 import {
   LayoutDashboard,
   Users,
@@ -22,11 +21,20 @@ const NAV = [
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
-export function Sidebar() {
+interface SidebarUser {
+  name: string | null;
+  email: string;
+}
+
+export function Sidebar({ user }: { user: SidebarUser }) {
   const pathname = usePathname();
-  const { data: session } = useSession();
   const { businesses, current, setCurrentId } = useBusiness();
   const [open, setOpen] = useState(false);
+
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  }
 
   return (
     <aside className="flex h-screen w-64 shrink-0 flex-col bg-ink text-white">
@@ -116,14 +124,14 @@ export function Sidebar() {
         <div className="flex items-center gap-2 px-2 py-1.5">
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-medium">
-              {session?.user?.name ?? session?.user?.email}
+              {user.name ?? user.email}
             </span>
             <span className="block truncate text-[11px] text-white/40">
-              {session?.user?.email}
+              {user.email}
             </span>
           </span>
           <button
-            onClick={() => signOut({ callbackUrl: "/login" })}
+            onClick={logout}
             className="rounded-lg p-1.5 text-white/50 hover:bg-white/10 hover:text-white"
             aria-label="Sign out"
             title="Sign out"

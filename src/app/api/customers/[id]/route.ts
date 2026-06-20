@@ -1,16 +1,25 @@
-import { supabaseAdmin } from "@/lib/supabase";
+import { ID, Permission, Role } from "node-appwrite";
+import {
+  createAdminClient,
+  mapCustomer,
+  purgeCustomer,
+  DATABASE_ID,
+  CUSTOMERS,
+  CONTACT_LOGS,
+} from "@/lib/appwrite";
 import { currentUserId, membershipRole, jsonError } from "@/lib/authz";
 import { statusMeta } from "@/lib/status";
 import { buildCustomerFields } from "@/lib/validation";
 
 async function loadCustomerForUser(userId: string, customerId: string) {
-  const { data: customer } = await supabaseAdmin
-    .from("customers")
-    .select("*")
-    .eq("id", customerId)
-    .maybeSingle();
-  if (!customer) return { error: jsonError("Customer not found.", 404) };
-  if (!(await membershipRole(userId, customer.business_id)))
+  const { databases } = createAdminClient();
+  let customer;
+  try {
+    customer = await databases.getDocument(DATABASE_ID, CUSTOMERS, customerId);
+  } catch {
+    return { error: jsonError("Customer not found.", 404) };
+  }
+  if (!(await membershipRole(userId, customer.businessId)))
     return { error: jsonError("You don't have access to this customer.", 403) };
   return { customer };
 }
@@ -24,7 +33,7 @@ export async function GET(
 
   const { customer, error } = await loadCustomerForUser(userId, params.id);
   if (error) return error;
-  return Response.json({ customer });
+  return Response.json({ customer: mapCustomer(customer!) });
 }
 
 export async function PATCH(
@@ -45,30 +54,47 @@ export async function PATCH(
   const statusChanged =
     "status" in update && update.status !== customer!.status;
 
-  const { data, error: updErr } = await supabaseAdmin
-    .from("customers")
-    .update(update)
-    .eq("id", params.id)
-    .select("*")
-    .single();
-
-  if (updErr) return jsonError("Could not update customer.", 500);
+  const { databases } = createAdminClient();
+  let doc;
+  try {
+    doc = await databases.updateDocument(DATABASE_ID, CUSTOMERS, params.id, {
+      ...update,
+      updated_at: new Date().toISOString(),
+    });
+  } catch {
+    return jsonError("Could not update customer.", 500);
+  }
 
   // Record status transitions on the customer's timeline automatically.
   if (statusChanged) {
-    await supabaseAdmin.from("contact_logs").insert({
-      customer_id: params.id,
-      business_id: customer!.business_id,
-      user_id: userId,
-      type: "status_change",
-      subject: `Status changed to ${statusMeta(String(update.status)).label}`,
-      body: `Moved from ${statusMeta(customer!.status).label} to ${statusMeta(
-        String(update.status)
-      ).label}.`,
-    });
+    try {
+      await databases.createDocument(
+        DATABASE_ID,
+        CONTACT_LOGS,
+        ID.unique(),
+        {
+          customerId: params.id,
+          businessId: customer!.businessId,
+          userId,
+          type: "status_change",
+          subject: `Status changed to ${statusMeta(String(update.status)).label}`,
+          body: `Moved from ${statusMeta(customer!.status).label} to ${statusMeta(
+            String(update.status)
+          ).label}.`,
+          created_at: new Date().toISOString(),
+        },
+        [
+          Permission.read(Role.team(customer!.businessId)),
+          Permission.update(Role.team(customer!.businessId)),
+          Permission.delete(Role.team(customer!.businessId)),
+        ]
+      );
+    } catch {
+      // Non-fatal: the customer update already succeeded.
+    }
   }
 
-  return Response.json({ customer: data });
+  return Response.json({ customer: mapCustomer(doc) });
 }
 
 export async function DELETE(
@@ -81,10 +107,12 @@ export async function DELETE(
   const { error } = await loadCustomerForUser(userId, params.id);
   if (error) return error;
 
-  const { error: delErr } = await supabaseAdmin
-    .from("customers")
-    .delete()
-    .eq("id", params.id);
-  if (delErr) return jsonError("Could not delete customer.", 500);
-  return Response.json({ ok: true });
+  try {
+    const { databases } = createAdminClient();
+    await purgeCustomer(databases, params.id);
+    await databases.deleteDocument(DATABASE_ID, CUSTOMERS, params.id);
+    return Response.json({ ok: true });
+  } catch {
+    return jsonError("Could not delete customer.", 500);
+  }
 }

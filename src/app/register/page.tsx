@@ -1,13 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { AuthShell } from "@/components/auth-shell";
 import { Button, Field, inputClass } from "@/components/ui";
 
 export default function RegisterPage() {
-  const router = useRouter();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -23,13 +21,14 @@ export default function RegisterPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, email, password }),
     });
-    setLoading(false);
     if (!res.ok) {
+      setLoading(false);
       const { error } = await res.json().catch(() => ({ error: "" }));
       setError(error || "Could not create your account.");
       return;
     }
-    router.push("/login?registered=1");
+    // Registration signs the user in; full navigation picks up the cookie.
+    window.location.href = "/dashboard";
   }
 
   return (

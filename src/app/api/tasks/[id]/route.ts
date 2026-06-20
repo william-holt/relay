@@ -1,6 +1,19 @@
-import { supabaseAdmin } from "@/lib/supabase";
+import { createAdminClient, mapTask, DATABASE_ID, TASKS } from "@/lib/appwrite";
 import { currentUserId, membershipRole, jsonError } from "@/lib/authz";
 import { cleanText, MAX_SHORT } from "@/lib/validation";
+
+async function loadTaskForUser(userId: string, taskId: string) {
+  const { databases } = createAdminClient();
+  let task;
+  try {
+    task = await databases.getDocument(DATABASE_ID, TASKS, taskId);
+  } catch {
+    return { error: jsonError("Task not found.", 404) };
+  }
+  if (!(await membershipRole(userId, task.businessId)))
+    return { error: jsonError("No access to this task.", 403) };
+  return { task };
+}
 
 // Toggle done / update a task.
 export async function PATCH(
@@ -10,14 +23,8 @@ export async function PATCH(
   const userId = await currentUserId();
   if (!userId) return jsonError("Not signed in.", 401);
 
-  const { data: task } = await supabaseAdmin
-    .from("tasks")
-    .select("id, business_id")
-    .eq("id", params.id)
-    .maybeSingle();
-  if (!task) return jsonError("Task not found.", 404);
-  if (!(await membershipRole(userId, task.business_id)))
-    return jsonError("No access to this task.", 403);
+  const { error } = await loadTaskForUser(userId, params.id);
+  if (error) return error;
 
   const body = await req.json().catch(() => ({}));
   const update: Record<string, unknown> = {};
@@ -29,15 +36,18 @@ export async function PATCH(
   }
   if ("dueAt" in body) update.due_at = body.dueAt;
 
-  const { data, error } = await supabaseAdmin
-    .from("tasks")
-    .update(update)
-    .eq("id", params.id)
-    .select("*")
-    .single();
-
-  if (error) return jsonError("Could not update task.", 500);
-  return Response.json({ task: data });
+  try {
+    const { databases } = createAdminClient();
+    const doc = await databases.updateDocument(
+      DATABASE_ID,
+      TASKS,
+      params.id,
+      update
+    );
+    return Response.json({ task: mapTask(doc) });
+  } catch {
+    return jsonError("Could not update task.", 500);
+  }
 }
 
 export async function DELETE(
@@ -47,15 +57,14 @@ export async function DELETE(
   const userId = await currentUserId();
   if (!userId) return jsonError("Not signed in.", 401);
 
-  const { data: task } = await supabaseAdmin
-    .from("tasks")
-    .select("id, business_id")
-    .eq("id", params.id)
-    .maybeSingle();
-  if (!task) return jsonError("Task not found.", 404);
-  if (!(await membershipRole(userId, task.business_id)))
-    return jsonError("No access to this task.", 403);
+  const { error } = await loadTaskForUser(userId, params.id);
+  if (error) return error;
 
-  await supabaseAdmin.from("tasks").delete().eq("id", params.id);
-  return Response.json({ ok: true });
+  try {
+    const { databases } = createAdminClient();
+    await databases.deleteDocument(DATABASE_ID, TASKS, params.id);
+    return Response.json({ ok: true });
+  } catch {
+    return jsonError("Could not delete task.", 500);
+  }
 }

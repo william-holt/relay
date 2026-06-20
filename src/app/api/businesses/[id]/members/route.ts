@@ -1,6 +1,9 @@
-import { supabaseAdmin } from "@/lib/supabase";
+import { Query } from "node-appwrite";
+import { createAdminClient } from "@/lib/appwrite";
 import { currentUserId, membershipRole, jsonError } from "@/lib/authz";
 import { isValidEmail } from "@/lib/validation";
+
+const APP_URL = process.env.APP_URL ?? "http://localhost:3000";
 
 // List the members of a business (any member can view).
 export async function GET(
@@ -12,21 +15,25 @@ export async function GET(
   if (!(await membershipRole(userId, params.id)))
     return jsonError("No access to this business.", 403);
 
-  const { data, error } = await supabaseAdmin
-    .from("business_members")
-    .select("role, created_at, users(id, name, email)")
-    .eq("business_id", params.id);
-
-  if (error) return jsonError("Could not load members.", 500);
-
-  const members = (data ?? [])
-    .map((row: any) => row.users && { ...row.users, role: row.role, joinedAt: row.created_at })
-    .filter(Boolean);
-
-  return Response.json({ members });
+  try {
+    const { teams } = createAdminClient();
+    const res = await teams.listMemberships(params.id);
+    const members = res.memberships.map((m) => ({
+      id: m.userId,
+      membershipId: m.$id,
+      name: m.userName || null,
+      email: m.userEmail,
+      role: m.roles.includes("owner") ? "owner" : "member",
+      confirmed: m.confirm,
+      joinedAt: m.joined,
+    }));
+    return Response.json({ members });
+  } catch {
+    return jsonError("Could not load members.", 500);
+  }
 }
 
-// Add an existing registered user to a business as a member (owner only).
+// Add an existing registered user to a business (owner only).
 export async function POST(
   req: Request,
   { params }: { params: { id: string } }
@@ -41,27 +48,36 @@ export async function POST(
   const memberRole = role === "owner" ? "owner" : "member";
   const normalized = String(email).trim().toLowerCase();
 
-  const { data: user } = await supabaseAdmin
-    .from("users")
-    .select("id, name, email")
-    .eq("email", normalized)
-    .maybeSingle();
+  try {
+    const { users, teams } = createAdminClient();
+    const found = await users.list([Query.equal("email", normalized), Query.limit(1)]);
+    const user = found.users[0];
+    if (!user)
+      return jsonError(
+        "No Relay account exists for that email. Ask them to sign up first."
+      );
 
-  // Don't reveal whether an email is registered; ask them to sign up first.
-  if (!user)
-    return jsonError(
-      "No Relay account exists for that email. Ask them to sign up first."
+    const membership = await teams.createMembership(
+      params.id,
+      [memberRole],
+      undefined,
+      user.$id,
+      undefined,
+      `${APP_URL}/dashboard`
     );
 
-  const { error } = await supabaseAdmin
-    .from("business_members")
-    .upsert(
-      { business_id: params.id, user_id: user.id, role: memberRole },
-      { onConflict: "business_id,user_id" }
-    );
-
-  if (error) return jsonError("Could not add member.", 500);
-  return Response.json({ member: { ...user, role: memberRole } });
+    return Response.json({
+      member: {
+        id: user.$id,
+        membershipId: membership.$id,
+        name: user.name || null,
+        email: user.email,
+        role: memberRole,
+      },
+    });
+  } catch {
+    return jsonError("Could not add member.", 500);
+  }
 }
 
 // Remove a member from a business (owner only).
@@ -77,22 +93,21 @@ export async function DELETE(
   const { searchParams } = new URL(req.url);
   const targetUserId = searchParams.get("userId");
   if (!targetUserId) return jsonError("userId is required.");
+  if (targetUserId === userId)
+    return jsonError("You can't remove yourself from a business you own.");
 
-  // Never strip the business owner of their own membership.
-  const { data: biz } = await supabaseAdmin
-    .from("businesses")
-    .select("owner_id")
-    .eq("id", params.id)
-    .maybeSingle();
-  if (biz?.owner_id === targetUserId)
-    return jsonError("The business owner can't be removed.");
+  try {
+    const { teams } = createAdminClient();
+    const res = await teams.listMemberships(params.id, [
+      Query.equal("userId", targetUserId),
+      Query.limit(1),
+    ]);
+    const membership = res.memberships[0];
+    if (!membership) return jsonError("That person isn't a member.", 404);
 
-  const { error } = await supabaseAdmin
-    .from("business_members")
-    .delete()
-    .eq("business_id", params.id)
-    .eq("user_id", targetUserId);
-
-  if (error) return jsonError("Could not remove member.", 500);
-  return Response.json({ ok: true });
+    await teams.deleteMembership(params.id, membership.$id);
+    return Response.json({ ok: true });
+  } catch {
+    return jsonError("Could not remove member.", 500);
+  }
 }

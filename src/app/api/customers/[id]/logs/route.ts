@@ -1,15 +1,23 @@
-import { supabaseAdmin } from "@/lib/supabase";
+import { ID, Permission, Query, Role } from "node-appwrite";
+import {
+  createAdminClient,
+  mapLog,
+  DATABASE_ID,
+  CUSTOMERS,
+  CONTACT_LOGS,
+} from "@/lib/appwrite";
 import { currentUserId, membershipRole, jsonError } from "@/lib/authz";
 import { cleanText, MAX_SHORT, MAX_TEXT } from "@/lib/validation";
 
 async function guard(userId: string, customerId: string) {
-  const { data: customer } = await supabaseAdmin
-    .from("customers")
-    .select("id, business_id")
-    .eq("id", customerId)
-    .maybeSingle();
-  if (!customer) return { error: jsonError("Customer not found.", 404) };
-  if (!(await membershipRole(userId, customer.business_id)))
+  const { databases } = createAdminClient();
+  let customer;
+  try {
+    customer = await databases.getDocument(DATABASE_ID, CUSTOMERS, customerId);
+  } catch {
+    return { error: jsonError("Customer not found.", 404) };
+  }
+  if (!(await membershipRole(userId, customer.businessId)))
     return { error: jsonError("No access to this customer.", 403) };
   return { customer };
 }
@@ -25,14 +33,17 @@ export async function GET(
   const { error } = await guard(userId, params.id);
   if (error) return error;
 
-  const { data, error: qErr } = await supabaseAdmin
-    .from("contact_logs")
-    .select("*")
-    .eq("customer_id", params.id)
-    .order("created_at", { ascending: false });
-
-  if (qErr) return jsonError("Could not load activity.", 500);
-  return Response.json({ logs: data ?? [] });
+  try {
+    const { databases } = createAdminClient();
+    const res = await databases.listDocuments(DATABASE_ID, CONTACT_LOGS, [
+      Query.equal("customerId", params.id),
+      Query.orderDesc("created_at"),
+      Query.limit(200),
+    ]);
+    return Response.json({ logs: res.documents.map(mapLog) });
+  } catch {
+    return jsonError("Could not load activity.", 500);
+  }
 }
 
 // Log a new interaction (note / call / meeting / email).
@@ -55,26 +66,36 @@ export async function POST(
   if (!subject && !logBody)
     return jsonError("Add a subject or some details to log this interaction.");
 
-  const { data, error: insErr } = await supabaseAdmin
-    .from("contact_logs")
-    .insert({
-      customer_id: params.id,
-      business_id: customer!.business_id,
-      user_id: userId,
-      type,
-      subject,
-      body: logBody,
-    })
-    .select("*")
-    .single();
+  const now = new Date().toISOString();
+  try {
+    const { databases } = createAdminClient();
+    const doc = await databases.createDocument(
+      DATABASE_ID,
+      CONTACT_LOGS,
+      ID.unique(),
+      {
+        customerId: params.id,
+        businessId: customer!.businessId,
+        userId,
+        type,
+        subject,
+        body: logBody,
+        created_at: now,
+      },
+      [
+        Permission.read(Role.team(customer!.businessId)),
+        Permission.update(Role.team(customer!.businessId)),
+        Permission.delete(Role.team(customer!.businessId)),
+      ]
+    );
 
-  if (insErr) return jsonError("Could not log interaction.", 500);
+    // Touch the customer so it rises to the top of recently-active lists.
+    await databases.updateDocument(DATABASE_ID, CUSTOMERS, params.id, {
+      updated_at: now,
+    });
 
-  // Touch the customer so it rises to the top of recently-active lists.
-  await supabaseAdmin
-    .from("customers")
-    .update({ updated_at: new Date().toISOString() })
-    .eq("id", params.id);
-
-  return Response.json({ log: data });
+    return Response.json({ log: mapLog(doc) });
+  } catch {
+    return jsonError("Could not log interaction.", 500);
+  }
 }

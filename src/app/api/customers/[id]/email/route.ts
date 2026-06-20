@@ -1,11 +1,17 @@
-import { supabaseAdmin } from "@/lib/supabase";
+import { ID, Permission, Role } from "node-appwrite";
+import {
+  createAdminClient,
+  mapLog,
+  DATABASE_ID,
+  CUSTOMERS,
+  CONTACT_LOGS,
+} from "@/lib/appwrite";
 import { currentUserId, membershipRole, jsonError } from "@/lib/authz";
 import { resend, EMAIL_FROM } from "@/lib/resend";
 import { rateLimit, tooManyRequests } from "@/lib/rate-limit";
 import { cleanText, MAX_SHORT, MAX_EMAIL_BODY } from "@/lib/validation";
 
-// Send an email to a customer directly from the app, then log it on the
-// customer's timeline so outreach stays in one place.
+// Send an email to a customer, then log it on their timeline.
 export async function POST(
   req: Request,
   { params }: { params: { id: string } }
@@ -13,19 +19,18 @@ export async function POST(
   const userId = await currentUserId();
   if (!userId) return jsonError("Not signed in.", 401);
 
-  // Guard against using the app as an open email relay: cap outbound volume
-  // per user. (Best-effort, in-memory — see lib/rate-limit.ts.)
+  // Guard against using the app as an open email relay.
   const limit = rateLimit(`email:${userId}`, 20, 10 * 60_000);
   if (!limit.ok) return tooManyRequests(limit.retryAfterSeconds);
 
-  const { data: customer } = await supabaseAdmin
-    .from("customers")
-    .select("id, business_id, name, email")
-    .eq("id", params.id)
-    .maybeSingle();
-
-  if (!customer) return jsonError("Customer not found.", 404);
-  if (!(await membershipRole(userId, customer.business_id)))
+  const { databases } = createAdminClient();
+  let customer;
+  try {
+    customer = await databases.getDocument(DATABASE_ID, CUSTOMERS, params.id);
+  } catch {
+    return jsonError("Customer not found.", 404);
+  }
+  if (!(await membershipRole(userId, customer.businessId)))
     return jsonError("No access to this customer.", 403);
   if (!customer.email)
     return jsonError("This customer doesn't have an email address yet.");
@@ -57,25 +62,32 @@ export async function POST(
     return jsonError("Could not send the email.", 502);
   }
 
-  const { data: log } = await supabaseAdmin
-    .from("contact_logs")
-    .insert({
-      customer_id: customer.id,
-      business_id: customer.business_id,
-      user_id: userId,
+  const now = new Date().toISOString();
+  const log = await databases.createDocument(
+    DATABASE_ID,
+    CONTACT_LOGS,
+    ID.unique(),
+    {
+      customerId: customer.$id,
+      businessId: customer.businessId,
+      userId,
       type: "email",
       subject,
       body: message,
-    })
-    .select("*")
-    .single();
+      created_at: now,
+    },
+    [
+      Permission.read(Role.team(customer.businessId)),
+      Permission.update(Role.team(customer.businessId)),
+      Permission.delete(Role.team(customer.businessId)),
+    ]
+  );
 
-  await supabaseAdmin
-    .from("customers")
-    .update({ updated_at: new Date().toISOString() })
-    .eq("id", customer.id);
+  await databases.updateDocument(DATABASE_ID, CUSTOMERS, customer.$id, {
+    updated_at: now,
+  });
 
-  return Response.json({ ok: true, log });
+  return Response.json({ ok: true, log: mapLog(log) });
 }
 
 function escapeHtml(s: string) {

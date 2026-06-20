@@ -7,7 +7,6 @@ import {
   useEffect,
   useState,
 } from "react";
-import { useSession } from "next-auth/react";
 import type { Business } from "@/types";
 
 interface BusinessContextValue {
@@ -24,7 +23,6 @@ const Ctx = createContext<BusinessContextValue | null>(null);
 const STORAGE_KEY = "relay.currentBusinessId";
 
 export function BusinessProvider({ children }: { children: React.ReactNode }) {
-  const { status } = useSession();
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [currentId, setCurrentIdState] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -33,7 +31,12 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
     setLoading(true);
     try {
       const res = await fetch("/api/businesses");
-      if (!res.ok) return;
+      if (!res.ok) {
+        // Not signed in (e.g. on the auth pages) — nothing to load.
+        setBusinesses([]);
+        setCurrentIdState(null);
+        return;
+      }
       const { businesses } = await res.json();
       setBusinesses(businesses ?? []);
 
@@ -53,13 +56,8 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (status === "authenticated") refresh();
-    if (status === "unauthenticated") {
-      setBusinesses([]);
-      setCurrentIdState(null);
-      setLoading(false);
-    }
-  }, [status, refresh]);
+    refresh();
+  }, [refresh]);
 
   const setCurrentId = useCallback((id: string) => {
     setCurrentIdState(id);

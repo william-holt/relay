@@ -1,14 +1,12 @@
 "use client";
 
 import { Suspense, useState } from "react";
-import { signIn } from "next-auth/react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AuthShell } from "@/components/auth-shell";
 import { Button, Field, inputClass } from "@/components/ui";
 
 function LoginForm() {
-  const router = useRouter();
   const params = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -19,18 +17,19 @@ function LoginForm() {
     e.preventDefault();
     setError("");
     setLoading(true);
-    const res = await signIn("credentials", {
-      email,
-      password,
-      redirect: false,
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
     });
-    setLoading(false);
-    if (res?.error) {
-      setError("That email and password don't match an account.");
+    if (!res.ok) {
+      setLoading(false);
+      const { error } = await res.json().catch(() => ({ error: "" }));
+      setError(error || "That email and password don't match an account.");
       return;
     }
-    router.push(params.get("callbackUrl") ?? "/dashboard");
-    router.refresh();
+    // Full navigation so the session cookie is picked up everywhere.
+    window.location.href = params.get("callbackUrl") || "/dashboard";
   }
 
   return (

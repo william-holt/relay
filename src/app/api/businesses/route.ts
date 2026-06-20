@@ -1,48 +1,65 @@
-import { supabaseAdmin } from "@/lib/supabase";
-import { currentUserId, jsonError } from "@/lib/authz";
+import { ID } from "node-appwrite";
+import { createSessionClient } from "@/lib/appwrite";
+import { currentUser, membershipRole, jsonError } from "@/lib/authz";
+import { cleanText, MAX_SHORT } from "@/lib/validation";
 
-// List every business the signed-in user belongs to.
+// List every business (Team) the signed-in user belongs to.
 export async function GET() {
-  const userId = await currentUserId();
-  if (!userId) return jsonError("Not signed in.", 401);
+  const user = await currentUser();
+  if (!user) return jsonError("Not signed in.", 401);
 
-  const { data, error } = await supabaseAdmin
-    .from("business_members")
-    .select("role, businesses(id, name, owner_id, created_at)")
-    .eq("user_id", userId);
+  const session = createSessionClient();
+  if (!session) return jsonError("Not signed in.", 401);
 
-  if (error) return jsonError("Could not load businesses.", 500);
+  let teamList;
+  try {
+    teamList = await session.teams.list();
+  } catch {
+    return jsonError("Could not load businesses.", 500);
+  }
 
-  const businesses = (data ?? [])
-    .map((row: any) => row.businesses && { ...row.businesses, role: row.role })
-    .filter(Boolean)
-    .sort(
-      (a: any, b: any) =>
-        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    );
+  const businesses = await Promise.all(
+    teamList.teams.map(async (t) => ({
+      id: t.$id,
+      name: t.name,
+      owner_id: "",
+      role: (await membershipRole(user.id, t.$id)) ?? "member",
+      created_at: t.$createdAt,
+    }))
+  );
+
+  businesses.sort(
+    (a, b) =>
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
 
   return Response.json({ businesses });
 }
 
-// Create a new business and make the creator its owner.
+// Create a new business (Team); the creator becomes its owner.
 export async function POST(req: Request) {
-  const userId = await currentUserId();
-  if (!userId) return jsonError("Not signed in.", 401);
+  const user = await currentUser();
+  if (!user) return jsonError("Not signed in.", 401);
+
+  const session = createSessionClient();
+  if (!session) return jsonError("Not signed in.", 401);
 
   const { name } = await req.json().catch(() => ({}));
-  if (!name || !String(name).trim()) return jsonError("Business name is required.");
+  const clean = cleanText(name, MAX_SHORT);
+  if (!clean) return jsonError("Business name is required.");
 
-  const { data: biz, error } = await supabaseAdmin
-    .from("businesses")
-    .insert({ name: String(name).trim(), owner_id: userId })
-    .select("id, name, owner_id, created_at")
-    .single();
-
-  if (error || !biz) return jsonError("Could not create business.", 500);
-
-  await supabaseAdmin
-    .from("business_members")
-    .insert({ business_id: biz.id, user_id: userId, role: "owner" });
-
-  return Response.json({ business: { ...biz, role: "owner" } });
+  try {
+    const team = await session.teams.create(ID.unique(), clean, ["owner"]);
+    return Response.json({
+      business: {
+        id: team.$id,
+        name: team.name,
+        owner_id: user.id,
+        role: "owner",
+        created_at: team.$createdAt,
+      },
+    });
+  } catch {
+    return jsonError("Could not create business.", 500);
+  }
 }

@@ -1,4 +1,11 @@
-import { supabaseAdmin } from "@/lib/supabase";
+import { Query } from "node-appwrite";
+import {
+  createAdminClient,
+  mapCustomer,
+  DATABASE_ID,
+  CUSTOMERS,
+  TASKS,
+} from "@/lib/appwrite";
 import { currentUserId, membershipRole, jsonError } from "@/lib/authz";
 import { STATUS_ORDER, statusMeta } from "@/lib/status";
 
@@ -13,14 +20,18 @@ export async function GET(req: Request) {
   if (!(await membershipRole(userId, businessId)))
     return jsonError("No access to this business.", 403);
 
-  const { data: customers, error } = await supabaseAdmin
-    .from("customers")
-    .select("id, name, status, value, updated_at, company")
-    .eq("business_id", businessId);
+  const { databases } = createAdminClient();
 
-  if (error) return jsonError("Could not load dashboard.", 500);
-
-  const rows = customers ?? [];
+  let rows;
+  try {
+    const res = await databases.listDocuments(DATABASE_ID, CUSTOMERS, [
+      Query.equal("businessId", businessId),
+      Query.limit(1000),
+    ]);
+    rows = res.documents.map(mapCustomer);
+  } catch {
+    return jsonError("Could not load dashboard.", 500);
+  }
 
   // Counts per status, in lifecycle order.
   const byStatus = STATUS_ORDER.map((s) => ({
@@ -42,7 +53,6 @@ export async function GET(req: Request) {
     (r) => !["sold", "recurring", "lost"].includes(r.status)
   ).length;
 
-  // Recently updated customers for the activity panel.
   const recent = [...rows]
     .sort(
       (a, b) =>
@@ -50,14 +60,34 @@ export async function GET(req: Request) {
     )
     .slice(0, 6);
 
-  // Tasks due soon.
-  const { data: tasks } = await supabaseAdmin
-    .from("tasks")
-    .select("id, title, due_at, customer_id, customers(name)")
-    .eq("business_id", businessId)
-    .eq("done", false)
-    .order("due_at", { ascending: true, nullsFirst: false })
-    .limit(6);
+  // Tasks due soon, with the customer's name attached for display.
+  let tasks: {
+    id: string;
+    title: string;
+    due_at: string | null;
+    customer_id: string | null;
+    customers: { name: string } | null;
+  }[] = [];
+  try {
+    const res = await databases.listDocuments(DATABASE_ID, TASKS, [
+      Query.equal("businessId", businessId),
+      Query.equal("done", false),
+      Query.orderAsc("due_at"),
+      Query.limit(6),
+    ]);
+    const nameById = new Map(rows.map((r) => [r.id, r.name]));
+    tasks = res.documents.map((d) => ({
+      id: d.$id,
+      title: d.title,
+      due_at: d.due_at ?? null,
+      customer_id: d.customerId ?? null,
+      customers: d.customerId && nameById.has(d.customerId)
+        ? { name: nameById.get(d.customerId)! }
+        : null,
+    }));
+  } catch {
+    tasks = [];
+  }
 
   return Response.json({
     totals: {
@@ -68,6 +98,6 @@ export async function GET(req: Request) {
     },
     byStatus,
     recent,
-    tasks: tasks ?? [],
+    tasks,
   });
 }

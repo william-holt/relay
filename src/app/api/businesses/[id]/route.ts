@@ -1,5 +1,6 @@
-import { supabaseAdmin } from "@/lib/supabase";
+import { createAdminClient, purgeBusiness } from "@/lib/appwrite";
 import { currentUserId, membershipRole, jsonError } from "@/lib/authz";
+import { cleanText, MAX_SHORT } from "@/lib/validation";
 
 // Rename a business (owner only).
 export async function PATCH(
@@ -10,23 +11,31 @@ export async function PATCH(
   if (!userId) return jsonError("Not signed in.", 401);
 
   const role = await membershipRole(userId, params.id);
-  if (role !== "owner") return jsonError("Only the owner can edit this business.", 403);
+  if (role !== "owner")
+    return jsonError("Only the owner can edit this business.", 403);
 
   const { name } = await req.json().catch(() => ({}));
-  if (!name || !String(name).trim()) return jsonError("Business name is required.");
+  const clean = cleanText(name, MAX_SHORT);
+  if (!clean) return jsonError("Business name is required.");
 
-  const { data, error } = await supabaseAdmin
-    .from("businesses")
-    .update({ name: String(name).trim() })
-    .eq("id", params.id)
-    .select("id, name, owner_id, created_at")
-    .single();
-
-  if (error) return jsonError("Could not update business.", 500);
-  return Response.json({ business: { ...data, role } });
+  try {
+    const { teams } = createAdminClient();
+    const team = await teams.updateName(params.id, clean);
+    return Response.json({
+      business: {
+        id: team.$id,
+        name: team.name,
+        owner_id: "",
+        role,
+        created_at: team.$createdAt,
+      },
+    });
+  } catch {
+    return jsonError("Could not update business.", 500);
+  }
 }
 
-// Delete a business (owner only).
+// Delete a business and all of its data (owner only).
 export async function DELETE(
   _req: Request,
   { params }: { params: { id: string } }
@@ -35,9 +44,16 @@ export async function DELETE(
   if (!userId) return jsonError("Not signed in.", 401);
 
   const role = await membershipRole(userId, params.id);
-  if (role !== "owner") return jsonError("Only the owner can delete this business.", 403);
+  if (role !== "owner")
+    return jsonError("Only the owner can delete this business.", 403);
 
-  const { error } = await supabaseAdmin.from("businesses").delete().eq("id", params.id);
-  if (error) return jsonError("Could not delete business.", 500);
-  return Response.json({ ok: true });
+  try {
+    const { teams, databases } = createAdminClient();
+    // No FK cascade in Appwrite — remove the business's documents first.
+    await purgeBusiness(databases, params.id);
+    await teams.delete(params.id);
+    return Response.json({ ok: true });
+  } catch {
+    return jsonError("Could not delete business.", 500);
+  }
 }

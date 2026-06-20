@@ -17,7 +17,9 @@ const securityHeaders = [
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "font-src 'self' data:",
-      "connect-src 'self' https://*.supabase.co",
+      // The browser only talks to our own API routes; those reach Appwrite
+      // server-side. Widen this if you ever call Appwrite from the client.
+      "connect-src 'self'",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",
