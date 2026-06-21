@@ -1,5 +1,13 @@
 import { cookies } from "next/headers";
-import { Account, Client, Databases, Query, Teams, Users } from "node-appwrite";
+import {
+  Account,
+  Client,
+  Databases,
+  Query,
+  Storage,
+  Teams,
+  Users,
+} from "node-appwrite";
 import { SESSION_COOKIE } from "./cookies";
 
 /**
@@ -23,6 +31,14 @@ export const DATABASE_ID = process.env.APPWRITE_DATABASE_ID ?? "relay";
 export const CUSTOMERS = "customers";
 export const CONTACT_LOGS = "contact_logs";
 export const TASKS = "tasks";
+export const EMAIL_TEMPLATES = "email_templates";
+export const ATTACHMENTS = "attachments";
+export const BUSINESS_PROFILES = "business_profiles";
+
+// Storage bucket id for customer file attachments.
+// Configurable so it can point at an existing bucket on plans that cap buckets.
+export const BUCKET_ATTACHMENTS =
+  process.env.APPWRITE_ATTACHMENTS_BUCKET ?? "attachments";
 
 function base() {
   return new Client().setEndpoint(ENDPOINT).setProject(PROJECT);
@@ -44,6 +60,9 @@ export function createAdminClient() {
     },
     get users() {
       return new Users(client);
+    },
+    get storage() {
+      return new Storage(client);
     },
   };
 }
@@ -100,8 +119,47 @@ export function mapLog(d: Doc) {
     business_id: d.businessId,
     user_id: d.userId ?? null,
     type: d.type,
+    direction: d.direction ?? "outbound",
     subject: d.subject ?? null,
     body: d.body ?? null,
+    created_at: d.created_at ?? d.$createdAt,
+  };
+}
+
+export function mapTemplate(d: Doc) {
+  return {
+    id: d.$id,
+    business_id: d.businessId,
+    name: d.name,
+    subject: d.subject ?? "",
+    body: d.body ?? "",
+  };
+}
+
+export function mapProfile(d: Doc) {
+  return {
+    id: d.$id,
+    business_id: d.businessId,
+    industry: d.industry ?? "",
+    description: d.description ?? "",
+    value_proposition: d.value_proposition ?? "",
+    icp: d.icp ?? "",
+    target_titles: d.target_titles ?? "",
+    locations: d.locations ?? "",
+    website: d.website ?? "",
+  };
+}
+
+export function mapAttachment(d: Doc) {
+  return {
+    id: d.$id,
+    business_id: d.businessId,
+    customer_id: d.customerId,
+    file_id: d.fileId,
+    name: d.name,
+    size: d.size ?? 0,
+    mime: d.mime ?? null,
+    uploaded_by: d.uploadedBy ?? null,
     created_at: d.created_at ?? d.$createdAt,
   };
 }
@@ -142,15 +200,57 @@ async function deleteWhere(
   }
 }
 
-/** Remove a customer's contact logs and tasks. */
-export async function purgeCustomer(databases: Databases, customerId: string) {
-  await deleteWhere(databases, CONTACT_LOGS, [Query.equal("customerId", customerId)]);
-  await deleteWhere(databases, TASKS, [Query.equal("customerId", customerId)]);
+// Delete attachment documents AND their stored files for a set of attachments.
+async function deleteAttachmentsWhere(
+  databases: Databases,
+  storage: Storage,
+  queries: string[]
+) {
+  for (;;) {
+    const { documents } = await databases.listDocuments(DATABASE_ID, ATTACHMENTS, [
+      ...queries,
+      Query.limit(100),
+    ]);
+    if (documents.length === 0) return;
+    await Promise.all(
+      documents.map(async (d) => {
+        try {
+          await storage.deleteFile(BUCKET_ATTACHMENTS, d.fileId);
+        } catch {
+          // File may already be gone; remove the record regardless.
+        }
+        await databases.deleteDocument(DATABASE_ID, ATTACHMENTS, d.$id);
+      })
+    );
+    if (documents.length < 100) return;
+  }
 }
 
-/** Remove every customer, contact log, and task belonging to a business. */
-export async function purgeBusiness(databases: Databases, businessId: string) {
+/** Remove a customer's contact logs, tasks, and attachments (incl. files). */
+export async function purgeCustomer(
+  databases: Databases,
+  storage: Storage,
+  customerId: string
+) {
+  await deleteWhere(databases, CONTACT_LOGS, [Query.equal("customerId", customerId)]);
+  await deleteWhere(databases, TASKS, [Query.equal("customerId", customerId)]);
+  await deleteAttachmentsWhere(databases, storage, [
+    Query.equal("customerId", customerId),
+  ]);
+}
+
+/** Remove all data belonging to a business. */
+export async function purgeBusiness(
+  databases: Databases,
+  storage: Storage,
+  businessId: string
+) {
+  await deleteAttachmentsWhere(databases, storage, [
+    Query.equal("businessId", businessId),
+  ]);
   await deleteWhere(databases, CONTACT_LOGS, [Query.equal("businessId", businessId)]);
   await deleteWhere(databases, TASKS, [Query.equal("businessId", businessId)]);
+  await deleteWhere(databases, EMAIL_TEMPLATES, [Query.equal("businessId", businessId)]);
+  await deleteWhere(databases, BUSINESS_PROFILES, [Query.equal("businessId", businessId)]);
   await deleteWhere(databases, CUSTOMERS, [Query.equal("businessId", businessId)]);
 }

@@ -6,6 +6,8 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   Users,
+  Sparkles,
+  BarChart3,
   Settings,
   ChevronsUpDown,
   Plus,
@@ -18,6 +20,8 @@ import { classNames } from "@/lib/utils";
 const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/customers", label: "Customers", icon: Users },
+  { href: "/research", label: "Research", icon: Sparkles },
+  { href: "/reports", label: "Reports", icon: BarChart3 },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

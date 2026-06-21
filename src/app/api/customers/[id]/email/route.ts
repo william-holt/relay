@@ -72,6 +72,7 @@ export async function POST(
       businessId: customer.businessId,
       userId,
       type: "email",
+      direction: "outbound",
       subject,
       body: message,
       created_at: now,

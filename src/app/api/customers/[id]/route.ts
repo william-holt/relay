@@ -108,8 +108,8 @@ export async function DELETE(
   if (error) return error;
 
   try {
-    const { databases } = createAdminClient();
-    await purgeCustomer(databases, params.id);
+    const { databases, storage } = createAdminClient();
+    await purgeCustomer(databases, storage, params.id);
     await databases.deleteDocument(DATABASE_ID, CUSTOMERS, params.id);
     return Response.json({ ok: true });
   } catch {

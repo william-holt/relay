@@ -86,6 +86,7 @@ const customers = [
     notes: "Renewed annual retainer. Champion internally — keep close.",
     createdDaysAgo: 240, updatedDaysAgo: 3,
     logs: [
+      { type: "email", direction: "inbound", subject: "Re: Q3 renewal", body: "Looks great — countersigned and attached. Thanks!", daysAgo: 2 },
       { type: "email", subject: "Q3 renewal confirmed", body: "Signed for another 12 months.", daysAgo: 3 },
       { type: "call", subject: "Quarterly check-in", body: "Happy with delivery cadence.", daysAgo: 30 },
       { type: "status_change", subject: "Status changed to Recurring", body: "Moved from Sold to Recurring.", daysAgo: 200 },
@@ -198,7 +199,13 @@ const customers = [
 
 // --- Cleanup ----------------------------------------------------------------
 async function purgeTeam(teamId) {
-  for (const coll of ["contact_logs", "tasks", "customers"]) {
+  for (const coll of [
+    "contact_logs",
+    "tasks",
+    "email_templates",
+    "business_profiles",
+    "customers",
+  ]) {
     try {
       let docs;
       do {
@@ -283,8 +290,9 @@ async function main() {
         {
           customerId: customer.$id,
           businessId: team.id,
-          userId: (l.by ?? createdBy).id,
+          userId: l.direction === "inbound" ? null : (l.by ?? createdBy).id,
           type: l.type,
+          direction: l.direction ?? "outbound",
           subject: l.subject ?? null,
           body: l.body ?? null,
           created_at: daysAgo(l.daysAgo ?? 5),
@@ -314,7 +322,63 @@ async function main() {
     }
   }
 
-  console.log(`  ${customers.length} customers, ${logCount} logs, ${taskCount} tasks.`);
+  console.log("→ Creating email templates…");
+  const templates = [
+    [ACME, "Intro outreach", "Quick hello from Acme Consulting", "Hi {first name},\n\nI came across {company} and thought there might be a fit. Open to a quick chat this week?\n\nBest,\nDana"],
+    [ACME, "Proposal follow-up", "Following up on our proposal", "Hi {first name},\n\nJust checking in on the proposal I sent over. Happy to walk through any questions.\n\nThanks,\nDana"],
+    [OKAFOR, "Engagement letter", "Your engagement letter", "Hi {first name},\n\nAttached is the engagement letter for your review and signature. Let me know if anything needs adjusting.\n\nRegards,\nSam"],
+  ];
+  for (const [team, name, subject, body] of templates) {
+    await databases.createDocument(
+      DB_ID,
+      "email_templates",
+      ID.unique(),
+      { businessId: team.id, name, subject, body },
+      perms(team.id)
+    );
+  }
+
+  console.log("→ Creating business profiles…");
+  const profiles = [
+    [ACME, {
+      industry: "B2B management consulting",
+      description: "We help mid-market operations teams streamline processes and cut costs.",
+      value_proposition: "Senior consultants, fixed-fee engagements, measurable ROI within one quarter.",
+      icp: "US mid-market companies (50–500 employees) with growing ops complexity, especially retail and manufacturing.",
+      target_titles: "COO, VP Operations, Head of Operations",
+      locations: "United States",
+      website: "https://acme.example",
+    }],
+    [BLOOM, {
+      industry: "Brand & graphic design studio",
+      description: "Boutique studio doing brand identity, packaging, and web design for small consumer brands.",
+      value_proposition: "Distinctive, founder-led design with fast turnarounds.",
+      icp: "Early-stage consumer brands, cafes, and makers needing a brand refresh.",
+      target_titles: "Founder, Owner, Marketing Lead",
+      locations: "Pacific Northwest, US",
+      website: "https://bloomstudio.example",
+    }],
+    [OKAFOR, {
+      industry: "Business & commercial law",
+      description: "Outside general counsel for startups and SMBs — contracts, IP, and entity work.",
+      value_proposition: "Flat-rate retainers and fast, plain-English legal support.",
+      icp: "Funded startups and SMBs without in-house legal.",
+      target_titles: "Founder, CEO, General Counsel, Operations",
+      locations: "United States",
+      website: "https://okaforlegal.example",
+    }],
+  ];
+  for (const [team, p] of profiles) {
+    await databases.createDocument(
+      DB_ID,
+      "business_profiles",
+      ID.unique(),
+      { businessId: team.id, ...p },
+      perms(team.id)
+    );
+  }
+
+  console.log(`  ${customers.length} customers, ${logCount} logs, ${taskCount} tasks, ${templates.length} templates, ${profiles.length} profiles.`);
   console.log("\n✓ Seed complete.\n");
   console.log("  Log in at http://localhost:3000/login with:");
   console.log("    dana@relay.test / password123   (owns Acme Consulting + Bloom Studio)");

@@ -26,6 +26,8 @@ export async function GET(req: Request) {
     Query.limit(200),
   ];
   if (searchParams.get("open") === "true") queries.push(Query.equal("done", false));
+  const customerId = searchParams.get("customerId");
+  if (customerId) queries.push(Query.equal("customerId", customerId));
 
   try {
     const { databases } = createAdminClient();

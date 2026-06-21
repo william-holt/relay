@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, Download, Upload } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useBusiness } from "@/components/business-context";
 import { PageHeader } from "@/components/page-header";
@@ -11,7 +11,10 @@ import { StatusBadge, StatusSelect } from "@/components/status";
 import { Avatar, Button, Field, Modal, inputClass } from "@/components/ui";
 import { STATUS_LIST, type CustomerStatus } from "@/lib/status";
 import { formatCurrency } from "@/lib/utils";
+import { useRealtime } from "@/lib/use-realtime";
 import type { Customer } from "@/types";
+
+const REALTIME_COLLECTIONS = ["customers"];
 
 function CustomersInner() {
   const { current } = useBusiness();
@@ -23,6 +26,7 @@ function CustomersInner() {
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState(initialStatus);
   const [showAdd, setShowAdd] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   const load = useCallback(async () => {
     if (!current) return;
@@ -42,15 +46,32 @@ function CustomersInner() {
     return () => clearTimeout(t);
   }, [load, q]);
 
+  useRealtime(REALTIME_COLLECTIONS, load);
+
   return (
     <>
       <PageHeader
         title="Customers"
         subtitle={current?.name}
         actions={
-          <Button onClick={() => setShowAdd(true)} disabled={!current}>
-            <Plus size={16} /> Add customer
-          </Button>
+          <>
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (current)
+                  window.location.href = `/api/customers/export?businessId=${current.id}`;
+              }}
+              disabled={!current}
+            >
+              <Download size={16} /> Export
+            </Button>
+            <Button variant="outline" onClick={() => setShowImport(true)} disabled={!current}>
+              <Upload size={16} /> Import
+            </Button>
+            <Button onClick={() => setShowAdd(true)} disabled={!current}>
+              <Plus size={16} /> Add customer
+            </Button>
+          </>
         }
       />
 
@@ -159,7 +180,137 @@ function CustomersInner() {
           load();
         }}
       />
+      <ImportModal
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        businessId={current?.id ?? null}
+        onImported={() => {
+          setShowImport(false);
+          load();
+        }}
+      />
     </>
+  );
+}
+
+// Minimal RFC-4180-ish CSV parser (handles quoted fields, commas, newlines).
+function parseCsv(text: string): Record<string, string>[] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(field);
+      field = "";
+      if (row.some((v) => v.trim() !== "")) rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  if (field !== "" || row.length) {
+    row.push(field);
+    if (row.some((v) => v.trim() !== "")) rows.push(row);
+  }
+  if (rows.length < 2) return [];
+  const headers = rows[0].map((h) => h.trim().toLowerCase());
+  return rows.slice(1).map((r) => {
+    const obj: Record<string, string> = {};
+    headers.forEach((h, idx) => (obj[h] = (r[idx] ?? "").trim()));
+    return obj;
+  });
+}
+
+function ImportModal({
+  open,
+  onClose,
+  businessId,
+  onImported,
+}: {
+  open: boolean;
+  onClose: () => void;
+  businessId: string | null;
+  onImported: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<{ created: number; skipped: number } | null>(null);
+
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !businessId) return;
+    setBusy(true);
+    setError("");
+    setResult(null);
+    try {
+      const rows = parseCsv(await file.text());
+      if (rows.length === 0) {
+        setError("No data rows found. Include a header row with a 'name' column.");
+        return;
+      }
+      const res = await fetch("/api/customers/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ businessId, rows }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(json.error || "Import failed.");
+        return;
+      }
+      setResult({ created: json.created ?? 0, skipped: json.skipped ?? 0 });
+      if (json.created > 0) onImported();
+    } finally {
+      setBusy(false);
+      e.target.value = "";
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Import customers from CSV">
+      <div className="space-y-4">
+        <p className="text-sm text-slate-500">
+          Upload a CSV with a header row. Recognized columns:{" "}
+          <span className="font-medium text-slate-700">
+            name, email, phone, company, title, status, source, value, notes
+          </span>
+          . Only <span className="font-medium text-slate-700">name</span> is required.
+        </p>
+        <input
+          type="file"
+          accept=".csv,text/csv"
+          onChange={onFile}
+          disabled={busy || !businessId}
+          className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-accent file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-accent-hover"
+        />
+        {busy && <p className="text-sm text-slate-400">Importing…</p>}
+        {error && <p className="text-sm text-rose-600">{error}</p>}
+        {result && (
+          <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            Imported {result.created} customer{result.created === 1 ? "" : "s"}
+            {result.skipped > 0 ? `, skipped ${result.skipped} invalid row(s)` : ""}.
+          </p>
+        )}
+        <div className="flex justify-end">
+          <Button variant="outline" onClick={onClose}>
+            Done
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

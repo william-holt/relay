@@ -48,9 +48,9 @@ export async function DELETE(
     return jsonError("Only the owner can delete this business.", 403);
 
   try {
-    const { teams, databases } = createAdminClient();
+    const { teams, databases, storage } = createAdminClient();
     // No FK cascade in Appwrite — remove the business's documents first.
-    await purgeBusiness(databases, params.id);
+    await purgeBusiness(databases, storage, params.id);
     await teams.delete(params.id);
     return Response.json({ ok: true });
   } catch {

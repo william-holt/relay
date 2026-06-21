@@ -12,13 +12,16 @@
     "seed": "node scripts/seed.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.105.0",
+    "appwrite": "^26.0.0",
     "date-fns": "^3.6.0",
     "lucide-react": "^0.441.0",
     "next": "14.2.13",
     "node-appwrite": "^26.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "resend": "^4.0.0"
+    "resend": "^4.0.0",
+    "svix": "^1.96.0"
   },
   "devDependencies": {
     "@types/node": "^20.16.5",

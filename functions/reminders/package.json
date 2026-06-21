@@ -1,0 +1,12 @@
+{
+  "name": "relay-reminders",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/main.js",
+  "description": "Scheduled Appwrite Function: emails each business a daily digest of due/overdue follow-ups and stale deals.",
+  "dependencies": {
+    "node-appwrite": "^26.2.0",
+    "resend": "^4.0.0"
+  }
+}

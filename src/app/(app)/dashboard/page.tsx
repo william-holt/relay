@@ -1,14 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { formatDistanceToNow, format } from "date-fns";
-import { Users, Flame, TrendingUp, CircleDollarSign } from "lucide-react";
+import { Users, Flame, TrendingUp, CircleDollarSign, Check } from "lucide-react";
 import { useBusiness } from "@/components/business-context";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status";
 import { Avatar } from "@/components/ui";
 import { formatCurrency } from "@/lib/utils";
+import { useRealtime } from "@/lib/use-realtime";
+
+const REALTIME_COLLECTIONS = ["customers", "tasks", "contact_logs"];
 
 interface DashboardData {
   totals: {
@@ -38,14 +41,32 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (!current) return;
-    setLoading(true);
     fetch(`/api/dashboard?businessId=${current.id}`)
       .then((r) => r.json())
       .then(setData)
       .finally(() => setLoading(false));
   }, [current]);
+
+  useEffect(() => {
+    if (!current) return;
+    setLoading(true);
+    load();
+  }, [current, load]);
+
+  useRealtime(REALTIME_COLLECTIONS, load);
+
+  async function completeTask(id: string) {
+    // Optimistically drop it from the follow-up list.
+    setData((d) => (d ? { ...d, tasks: d.tasks.filter((t) => t.id !== id) } : d));
+    await fetch(`/api/tasks/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ done: true }),
+    });
+    load();
+  }
 
   const maxCount = Math.max(1, ...(data?.byStatus.map((s) => s.count) ?? [1]));
 
@@ -134,7 +155,13 @@ export default function DashboardPage() {
                   <ul className="mt-4 space-y-3">
                     {data.tasks.map((t) => (
                       <li key={t.id} className="flex items-start gap-2.5">
-                        <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+                        <button
+                          onClick={() => completeTask(t.id)}
+                          title="Mark done"
+                          className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border border-slate-300 text-transparent hover:border-accent hover:text-accent"
+                        >
+                          <Check size={11} />
+                        </button>
                         <span className="min-w-0">
                           <span className="block text-sm text-slate-700">
                             {t.title}
